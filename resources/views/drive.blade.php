@@ -80,6 +80,7 @@
                             {{ $item->name }}
                         @endif
                     </h2>
+                    <p class="c-item__creator">登録者：{{ $item->creator?->name ?? '記録なし' }}</p>
                     @if (!$item->isFolder())
                         <p class="c-item__size">{{ $formatSize($item->size_bytes) }}</p>
                     @endif
@@ -100,10 +101,12 @@
                                     <video controls preload="none" playsinline data-preview-src="{{ route('drive.preview', $item->id) }}" aria-label="{{ $item->name }}"></video>
                                     <noscript><p>JavaScriptなしでは上の原本プレビューを利用できます。</p></noscript>
                                 </details>
-                            @else
+                            @elseif (isset($thumbnailIds[$item->id]))
                                 <a class="c-item__thumbnail" href="{{ route('drive.preview', $item->id) }}">
-                                    <img src="{{ route('drive.preview', $item->id) }}" alt="{{ $item->name }} をプレビュー" loading="lazy" decoding="async">
+                                    <img src="{{ route('drive.thumbnail', $item->id) }}" alt="{{ $item->name }} の原本をプレビュー" loading="lazy" decoding="async">
                                 </a>
+                            @else
+                                <p class="c-item__placeholder">画像プレビューは上のリンクから</p>
                             @endif
                         @endunless
                         <details class="c-item__actions">

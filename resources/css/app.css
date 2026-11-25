@@ -61,8 +61,9 @@ input, select, button { font: inherit; }
 .c-empty { padding: 2rem; background: var(--color-surface); border: 0.0625rem dashed var(--color-line); border-radius: var(--radius); }
 .c-item { display: grid; align-content: start; gap: 0.45rem; padding: 0.9rem; min-width: 0; overflow-wrap: anywhere; background: var(--color-surface); border: 0.0625rem solid var(--color-line); border-radius: var(--radius); }
 .c-item h2 { font-size: 1.05rem; }
-.c-item__size { font-size: 0.86rem; color: var(--color-muted); }
+.c-item__size, .c-item__creator { font-size: 0.86rem; color: var(--color-muted); }
 .c-item__links { display: flex; flex-wrap: wrap; gap: 0 0.75rem; font-size: 0.9rem; }
+.c-item__placeholder { padding: 0.7rem; border-radius: var(--radius); background: var(--color-paper); color: var(--color-muted); font-size: 0.86rem; }
 .c-item__thumbnail { display: block; background: var(--color-paper); border-radius: var(--radius); }
 .c-item__thumbnail img, .c-item video { display: block; width: 100%; max-height: 12rem; aspect-ratio: 16 / 10; object-fit: contain; }
 .c-item video:not([src]) { display: none; }

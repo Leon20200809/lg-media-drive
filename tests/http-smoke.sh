@@ -17,13 +17,20 @@ export APP_ENV=local APP_DEBUG=false APP_URL="$url" DB_CONNECTION=sqlite DB_DATA
 export SESSION_DRIVER=file CACHE_STORE=file LOG_CHANNEL=single LARAVEL_STORAGE_PATH="$temp/store"
 quota=400
 if [[ -n "${TEST_MP4:-}" ]]; then quota=$((quota + $(wc -c <"$TEST_MP4"))); fi
-export MEDIA_QUOTA_BYTES=$quota MEDIA_IMAGE_MAX_KB=1
+export MEDIA_IMAGE_MAX_KB=4
 export APP_KEY
 APP_KEY="base64:$("$php_bin" -r 'echo base64_encode(random_bytes(32));')"
 touch "$DB_DATABASE"
 mkdir -p "$LARAVEL_STORAGE_PATH"/{app/private,framework/{cache/data,sessions,views},logs}
-"$php_bin" artisan migrate --force >/dev/null
+"$php_bin" artisan migrate --force \
+  --path=database/migrations/2026_11_25_000000_create_users.php \
+  --path=database/migrations/2026_11_25_000001_create_media_items.php >/dev/null
 "$php_bin" tests/seed-smoke.php "$temp"
+"$php_bin" artisan migrate --force >/dev/null
+quota=$((quota + $(wc -c <"$temp/large-enough.png") + $(wc -c <"$temp/wide.png") + $(wc -c <"$temp/test.png")))
+export MEDIA_QUOTA_BYTES=$quota
+has_gd=$("$php_bin" -r 'echo (int) function_exists("imagecreatefrompng");')
+if [[ ${REQUIRE_GD:-0} == 1 && "$has_gd" != 1 ]]; then echo 'GD required for this verification' >&2; exit 1; fi
 "$php_bin" -c docker/uploads.ini -S "127.0.0.1:$port" -t public >"$temp/server.log" 2>&1 &
 pid=$!
 for _ in {1..50}; do
@@ -101,14 +108,28 @@ req 404 "$url/storage/example.png"
 sign_in first@example.test "$temp/first"
 token_first=$(field)
 match '共有ドライブ'
+match 'legacy.png'
+match '登録者：記録なし'
+match '画像プレビューは上のリンクから'
+legacy=$(id_by_name legacy.png)
+req 404 -b "$temp/first" "$url/items/$legacy/thumbnail"
+req 200 -b "$temp/first" "$url/items/$legacy/download"
+cmp "$temp/test.png" "$temp/body"
 upload 201 "$temp/test.png" "$token_first" "$temp/first"
 image=$(json id)
 [[ -n "$image" ]]
 req 302 "$url/items/$image/preview"
+req 302 "$url/items/$image/thumbnail"
+req 401 -H 'Accept: application/json' "$url/items/$image/thumbnail"
 req 302 "$url/items/$image/download"
 req 401 -H 'Accept: application/json' "$url/items/$image/preview"
 req 200 -b "$temp/first" "$url/"
 match 'test.png'
+match '登録者：first'
+! grep -Fq "src=\"$url/items/$image/preview\"" "$temp/body"
+if [[ "$has_gd" == 1 ]]; then
+  grep -Fq "src=\"$url/items/$image/thumbnail\"" "$temp/body"
+fi
 req 200 -b "$temp/first" "$url/items/$image/preview"
 cmp "$temp/test.png" "$temp/body"
 grep -iq '^X-Content-Type-Options: nosniff' "$temp/headers"
@@ -126,8 +147,10 @@ grep -iq '^Cache-Control:.*no-store.*private' "$temp/headers"
 req 302 -b "$temp/second" --data-urlencode "_token=$token_second" -d '_method=PATCH' --data-urlencode 'name=共同編集.png' "$url/items/$image/rename"
 req 200 -b "$temp/first" "$url/"
 match '共同編集.png'
+match '登録者：first'
 req 302 -b "$temp/second" --data-urlencode "_token=$token_second" -d '_method=DELETE' "$url/items/$image"
 req 404 -b "$temp/first" "$url/items/$image/preview"
+req 404 -b "$temp/first" "$url/items/$image/thumbnail"
 req 200 -b "$temp/first" "$url/?trash=1"
 match '共同編集.png'
 req 302 -b "$temp/first" --data-urlencode "_token=$token_first" "$url/items/$image/restore"
@@ -136,22 +159,62 @@ cmp "$temp/test.png" "$temp/body"
 upload 422 "$temp/unsafe.svg" "$token_first" "$temp/first"
 upload 422 "$temp/imposter.png" "$token_first" "$temp/first"
 upload 422 "$temp/large.png" "$token_first" "$temp/first"
+upload 201 "$temp/large-enough.png" "$token_first" "$temp/first"
+sized=$(json id)
+if [[ "$has_gd" == 1 ]]; then
+  req 200 -b "$temp/second" "$url/items/$sized/thumbnail"
+  grep -iq '^Content-Type: image/png' "$temp/headers"
+  grep -iq '^Cache-Control:.*no-store.*private' "$temp/headers"
+  "$php_bin" -r '$s = getimagesize($argv[1]); if ($s[0] !== 320 || $s[1] !== 240 || filesize($argv[1]) > 327680) exit(1);' "$temp/body"
+  ! cmp -s "$temp/large-enough.png" "$temp/body"
+  cp "$temp/body" "$temp/thumbnail"
+else
+  req 404 -b "$temp/second" "$url/items/$sized/thumbnail"
+fi
+req 200 -b "$temp/second" "$url/items/$sized/download"
+cmp "$temp/large-enough.png" "$temp/body"
+upload 201 "$temp/wide.png" "$token_first" "$temp/first"
+wide=$(json id)
+req 404 -b "$temp/second" "$url/items/$wide/thumbnail"
+req 200 -b "$temp/first" "$url/items/$wide/download"
+cmp "$temp/wide.png" "$temp/body"
+# 一時ディレクトリで派生物の書込み先をファイルに置換し、原本の登録を妨げないことを確認。
+if [[ "$has_gd" == 1 ]]; then
+  thumb_dir="$LARAVEL_STORAGE_PATH/app/private/media/thumbnails"
+  mv "$thumb_dir" "$temp/held-thumbnails"
+  touch "$thumb_dir"
+  upload 201 "$temp/test.png" "$token_first" "$temp/first"
+  fallback=$(json id)
+  req 404 -b "$temp/first" "$url/items/$fallback/thumbnail"
+  req 200 -b "$temp/first" "$url/items/$fallback/download"
+  cmp "$temp/test.png" "$temp/body"
+  rm -- "$thumb_dir"
+  mv "$temp/held-thumbnails" "$thumb_dir"
+fi
 echo 'B PASS: real sessions, private routes, image upload/preview/download, second-user rename/trash/restore, MIME/size checks'
 
 # C: フォルダと祖先の保護、実MP4区間。各送信は通常のHTTPを通す。
 req 302 -b "$temp/first" --data-urlencode "_token=$token_first" --data-urlencode 'name=親' "$url/folders"
 parent=$(id_by_name 親)
-req 302 -b "$temp/first" --data-urlencode "_token=$token_first" --data-urlencode 'name=子' -d "parent_id=$parent" "$url/folders"
+req 302 -b "$temp/second" --data-urlencode "_token=$token_second" --data-urlencode 'name=子' -d "parent_id=$parent" "$url/folders"
 child=$(id_by_name 子)
+req 200 -b "$temp/first" "$url/?folder=$parent"
+match '登録者：second'
 req 422 -b "$temp/first" -H 'Accept: application/json' --data-urlencode "_token=$token_first" -d "_method=PATCH&destination=$child" "$url/items/$parent/move"
 req 302 -b "$temp/second" --data-urlencode "_token=$token_second" -d "_method=PATCH&destination=$child" "$url/items/$image/move"
 req 200 -b "$temp/first" "$url/?folder=$child"
 match '共同編集.png'
 req 302 -b "$temp/second" --data-urlencode "_token=$token_second" -d '_method=DELETE' "$url/items/$parent"
 req 404 -b "$temp/first" "$url/items/$image/download"
+req 404 -b "$temp/second" "$url/items/$image/thumbnail"
 req 404 -b "$temp/first" "$url/?folder=$child"
 req 302 -b "$temp/first" --data-urlencode "_token=$token_first" "$url/items/$parent/restore"
 req 200 -b "$temp/second" "$url/items/$image/preview"
+if [[ "$has_gd" == 1 ]]; then
+  req 200 -b "$temp/second" "$url/items/$image/thumbnail"
+  req 200 -b "$temp/second" "$url/items/$sized/thumbnail"
+  cmp "$temp/thumbnail" "$temp/body"
+fi
 if [[ -n "${TEST_MP4:-}" ]]; then
   upload 201 "$TEST_MP4" "$token_first" "$temp/first"
   video=$(json id)
@@ -206,4 +269,9 @@ for _ in {1..4}; do
 done
 req 429 -b "$temp/first" -H 'Accept: application/json' -d "_token=$fresh_token&email=wrong@example.test&password=invalid" "$url/login"
 echo 'D PASS: trash quota, DB failure cleanup, logout session/CSRF renewal, old session denied and login rate limit'
+if [[ "$has_gd" == 1 ]]; then
+  echo 'THUMBNAIL PASS: bounded real PNG, no original list source, separate cache and ACL, oversized image fallback, rollback/restore'
+else
+  echo 'THUMBNAIL FALLBACK PASS: GD absent, originals and list remain usable'
+fi
 echo "PASS: $count real HTTP responses checked"

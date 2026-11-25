@@ -14,6 +14,8 @@ final class MediaLibrary
     private const VIDEO = 'video/mp4';
     private const IMAGES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif'];
 
+    public function __construct(private readonly ThumbnailStore $thumbnails) {}
+
     /** ロック行を先に取得し、容量確認・階層変更を同時実行から守る。 */
     private function change(Closure $operation): mixed
     {
@@ -107,7 +109,7 @@ final class MediaLibrary
     }
 
     /** 実MIMEとサイズを検証し、登録に失敗した原本は補償削除する。 */
-    public function upload(UploadedFile $file, ?int $parentId): MediaItem
+    public function upload(UploadedFile $file, ?int $parentId, int $creatorId): MediaItem
     {
         $mime = $file->getMimeType();
         if ($mime !== self::VIDEO && !in_array($mime, self::IMAGES, true)) {
@@ -124,7 +126,7 @@ final class MediaLibrary
         $path = $directory.DIRECTORY_SEPARATOR.$key;
         $committed = false;
         try {
-            $item = $this->change(function () use ($file, $parentId, $mime, $bytes, $name, $directory, $key, $path) {
+            $item = $this->change(function () use ($file, $parentId, $creatorId, $mime, $bytes, $name, $directory, $key, $path) {
                 $this->parents($parentId);
                 if ($bytes > (int) config('media.quota_bytes') - $this->usedBytes()) {
                     $this->invalid('file', '共有容量の上限に達しました。ゴミ箱の原本も使用量に含まれます。');
@@ -137,8 +139,11 @@ final class MediaLibrary
                     throw new RuntimeException('原本を保護できません。');
                 }
 
+                $this->thumbnails->create($path, $key, $mime);
+
                 return MediaItem::create([
                     'parent_id' => $parentId,
+                    'created_by' => $creatorId,
                     'kind' => 'file',
                     'name' => $name,
                     'storage_key' => $key,
@@ -150,19 +155,22 @@ final class MediaLibrary
 
             return $item;
         } finally {
-            if (!$committed && is_file($path) && !unlink($path)) {
-                report(new RuntimeException('失敗したアップロードの原本を削除できません。'));
+            if (!$committed) {
+                $this->thumbnails->discard($key);
+                if (is_file($path) && !unlink($path)) {
+                    report(new RuntimeException('失敗したアップロードの原本を削除できません。'));
+                }
             }
         }
     }
 
     /** フォルダを通常領域に追加する。 */
-    public function createFolder(string $name, ?int $parentId): MediaItem
+    public function createFolder(string $name, ?int $parentId, int $creatorId): MediaItem
     {
-        return $this->change(function () use ($name, $parentId) {
+        return $this->change(function () use ($name, $parentId, $creatorId) {
             $this->parents($parentId);
 
-            return MediaItem::create(['name' => $this->cleanName($name), 'parent_id' => $parentId, 'kind' => 'folder']);
+            return MediaItem::create(['name' => $this->cleanName($name), 'parent_id' => $parentId, 'kind' => 'folder', 'created_by' => $creatorId]);
         });
     }
 

@@ -14,6 +14,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/', [DriveController::class, 'index'])->name('drive.index');
     Route::post('/items', [DriveController::class, 'upload'])->name('drive.upload');
     Route::post('/folders', [DriveController::class, 'folder'])->name('drive.folder');
+    Route::get('/items/{item}/thumbnail', [DriveController::class, 'thumbnail'])->whereNumber('item')->name('drive.thumbnail');
     Route::get('/items/{item}/preview', [DriveController::class, 'preview'])->whereNumber('item')->name('drive.preview');
     Route::get('/items/{item}/download', [DriveController::class, 'download'])->whereNumber('item')->name('drive.download');
     Route::patch('/items/{item}/rename', [DriveController::class, 'rename'])->whereNumber('item')->name('drive.rename');

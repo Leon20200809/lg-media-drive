@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 use App\Http\Responses\PrivateFileResponse;
 use App\Models\MediaItem;
 use App\Services\MediaLibrary;
+use App\Services\ThumbnailStore;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -12,7 +13,10 @@ use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 final class DriveController
 {
-    public function __construct(private readonly MediaLibrary $library) {}
+    public function __construct(
+        private readonly MediaLibrary $library,
+        private readonly ThumbnailStore $thumbnails,
+    ) {}
 
     /** 一覧と移動先は同じ私用領域から取得する。 */
     public function index(Request $request): View
@@ -21,10 +25,20 @@ final class DriveController
         $folderId = isset($input['folder']) ? (int) $input['folder'] : null;
         $trash = isset($input['trash']);
         $parents = $trash ? collect() : $this->library->parents($folderId);
-        $items = $trash ? MediaItem::onlyTrashed() : MediaItem::query()->where('parent_id', $folderId);
+        $query = $trash ? MediaItem::onlyTrashed() : MediaItem::query()->where('parent_id', $folderId);
+        $items = $query->with('creator:id,name')->orderByDesc('kind')->orderBy('name')->orderBy('id')->paginate(48)->withQueryString();
+        $thumbnailIds = [];
+        if (!$trash) {
+            foreach ($items as $item) {
+                if ($this->thumbnails->existing($item) !== null) {
+                    $thumbnailIds[$item->id] = true;
+                }
+            }
+        }
 
         return view('drive', [
-            'items' => $items->orderByDesc('kind')->orderBy('name')->orderBy('id')->paginate(48)->withQueryString(),
+            'items' => $items,
+            'thumbnailIds' => $thumbnailIds,
             'parents' => $parents,
             'folderId' => $folderId,
             'trash' => $trash,
@@ -41,7 +55,7 @@ final class DriveController
             'file' => ['required', 'file', 'max:'.max(config('media.image_max_kb'), config('media.video_max_kb'))],
             'parent_id' => ['nullable', 'integer', 'min:1'],
         ]);
-        $item = $this->library->upload($input['file'], $this->nullableId($input, 'parent_id'));
+        $item = $this->library->upload($input['file'], $this->nullableId($input, 'parent_id'), (int) $request->user()->getAuthIdentifier());
 
         return $request->expectsJson()
             ? response()->json(['id' => $item->id, 'name' => $item->name], 201)
@@ -56,6 +70,15 @@ final class DriveController
         return new PrivateFileResponse($this->library->original($file), $file->mime);
     }
 
+    /** 一覧用の縮小画像も原本と同じ認証・ゴミ箱境界で守る。 */
+    public function thumbnail(int $item): BinaryFileResponse
+    {
+        $path = $this->thumbnails->existing($this->library->active($item));
+        abort_if($path === null, 404);
+
+        return new PrivateFileResponse($path, 'image/png');
+    }
+
     /** ダウンロードはDBの表示名を使い、原本バイト列をそのまま返す。 */
     public function download(int $item): BinaryFileResponse
     {
@@ -68,7 +91,7 @@ final class DriveController
     public function folder(Request $request): RedirectResponse
     {
         $input = $request->validate(['name' => ['required', 'string', 'max:180'], 'parent_id' => ['nullable', 'integer', 'min:1']]);
-        $folder = $this->library->createFolder($input['name'], $this->nullableId($input, 'parent_id'));
+        $folder = $this->library->createFolder($input['name'], $this->nullableId($input, 'parent_id'), (int) $request->user()->getAuthIdentifier());
 
         return $this->folderRedirect($folder->parent_id, 'フォルダを作成しました。');
     }
